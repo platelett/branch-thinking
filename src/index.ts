@@ -216,11 +216,7 @@ Commands:
         },
         required: ["type"]
       }
-    },
-    anyOf: [
-      { required: ["content", "type"] },
-      { required: ["command"] }
-    ]
+    }
   }
 };
 
