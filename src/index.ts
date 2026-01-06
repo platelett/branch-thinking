@@ -14,21 +14,12 @@ import chalk from 'chalk';
 class BranchingThoughtServer {
   private branchManager = new BranchManager();
 
-  processThought(input: unknown): { content: Array<{ type: string; text: string }>; isError?: boolean } {
+  // Handle thought creation
+  processThought(input: BranchingThoughtInput): { content: Array<{ type: string; text: string }>; isError?: boolean } {
     try {
-      const inputData = input as any;
-      
-      // Handle commands if present
-      if (inputData.command) {
-        return this.handleCommand(inputData.command);
-      }
-
-      // Handle regular thought input
-      const thoughtInput = input as BranchingThoughtInput;
-      const thought = this.branchManager.addThought(thoughtInput);
+      const thought = this.branchManager.addThought(input);
       const branch = this.branchManager.getBranch(thought.branchId)!;
       
-      // Format the response with the branch status
       const formattedStatus = this.branchManager.formatBranchStatus(branch);
       console.error(formattedStatus); // Display in the console
 
@@ -60,9 +51,10 @@ class BranchingThoughtServer {
     }
   }
 
-  private handleCommand(command: { type: string; branchId?: string }): { content: Array<{ type: string; text: string }> } {
+  // Handle commands
+  handleCommand(commandType: string, branchId?: string): { content: Array<{ type: string; text: string }>; isError?: boolean } {
     try {
-      switch (command.type) {
+      switch (commandType) {
         case 'list': {
           const branches = this.branchManager.getAllBranches();
           const activeBranchId = this.branchManager.getActiveBranch()?.id;
@@ -81,11 +73,11 @@ class BranchingThoughtServer {
         }
 
         case 'focus': {
-          if (!command.branchId) {
+          if (!branchId) {
             throw new Error('branchId required for focus command');
           }
-          this.branchManager.setActiveBranch(command.branchId);
-          const branch = this.branchManager.getBranch(command.branchId)!;
+          this.branchManager.setActiveBranch(branchId);
+          const branch = this.branchManager.getBranch(branchId)!;
           const formattedStatus = this.branchManager.formatBranchStatus(branch);
           console.error(formattedStatus);
           
@@ -94,20 +86,19 @@ class BranchingThoughtServer {
               type: "text",
               text: JSON.stringify({
                 status: 'success',
-                message: `Now focused on branch: ${command.branchId}`,
-                activeBranch: command.branchId
+                message: `Now focused on branch: ${branchId}`,
+                activeBranch: branchId
               }, null, 2)
             }]
           };
         }
 
         case 'history': {
-          const branchId = command.branchId || this.branchManager.getActiveBranch()?.id;
-          if (!branchId) {
+          const targetBranchId = branchId || this.branchManager.getActiveBranch()?.id;
+          if (!targetBranchId) {
             throw new Error('No active branch and no branchId provided');
           }
-          const branch = this.branchManager.getBranch(branchId)!;
-          const history = this.branchManager.getBranchHistory(branchId);
+          const history = this.branchManager.getBranchHistory(targetBranchId);
           
           return {
             content: [{
@@ -118,7 +109,7 @@ class BranchingThoughtServer {
         }
 
         default:
-          throw new Error(`Unknown command: ${command.type}`);
+          throw new Error(`Unknown command: ${commandType}`);
       }
     } catch (error) {
       return {
@@ -128,32 +119,22 @@ class BranchingThoughtServer {
             error: error instanceof Error ? error.message : String(error),
             status: 'failed'
           }, null, 2)
-        }]
+        }],
+        isError: true
       };
     }
   }
 }
 
-const BRANCHING_THOUGHT_TOOL: Tool = {
-  name: "branch-thinking",
-  description: `A tool for managing multiple branches of thought with insights and cross-references.
+// Tool 1: 专门用于“思考” (扁平化 Schema)
+const THINK_TOOL: Tool = {
+  name: "branch-think",
+  description: `Record a new thought. Use this for analysis, hypothesis, or observations in the branching thought process.
   
 Each thought can:
 - Belong to a specific branch
 - Generate insights
-- Create cross-references to other branches
-- Include confidence scores and key points
-
-The system tracks:
-- Branch priorities and states
-- Relationships between thoughts
-- Accumulated insights
-- Cross-branch connections
-
-Commands:
-- list: Show all branches and their status
-- focus [branchId]: Switch focus to a specific branch
-- history [branchId?]: Show the history of thoughts in a branch (uses active branch if none specified)`,
+- Create cross-references to other branches`,
   inputSchema: {
     type: "object",
     properties: {
@@ -199,24 +180,30 @@ Commands:
           }
         },
         description: "Optional: Cross-references to other branches"
-      },
-      command: {
-        type: "object",
-        description: "Optional: Navigation command",
-        properties: {
-          type: {
-            type: "string",
-            enum: ["list", "focus", "history"],
-            description: "Command type"
-          },
-          branchId: {
-            type: "string",
-            description: "Branch ID for commands that require it"
-          }
-        },
-        required: ["type"]
       }
-    }
+    },
+    required: ["content", "type"]
+  }
+};
+
+// Tool 2: 专门用于“管理” (扁平化 Schema)
+const MANAGEMENT_TOOL: Tool = {
+  name: "branch-management",
+  description: "Manage branches: list all branches, focus on a specific branch, or view branch history.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        enum: ["list", "focus", "history"],
+        description: "Command to execute"
+      },
+      branchId: {
+        type: "string",
+        description: "Branch ID (required for 'focus' and specific 'history')"
+      }
+    },
+    required: ["command"]
   }
 };
 
@@ -235,12 +222,17 @@ const server = new Server(
 const thinkingServer = new BranchingThoughtServer();
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [BRANCHING_THOUGHT_TOOL],
+  tools: [THINK_TOOL, MANAGEMENT_TOOL],
 }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  if (request.params.name === "branch-thinking") {
-    return thinkingServer.processThought(request.params.arguments);
+  if (request.params.name === "branch-think") {
+    return thinkingServer.processThought(request.params.arguments as unknown as BranchingThoughtInput);
+  }
+  
+  if (request.params.name === "branch-management") {
+    const args = request.params.arguments as any;
+    return thinkingServer.handleCommand(args.command, args.branchId);
   }
 
   return {
